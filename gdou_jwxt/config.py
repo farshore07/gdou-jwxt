@@ -15,6 +15,8 @@ class JwxtConfig:
         "Chrome/120.0.0.0 Safari/537.36"
     )
     timeout: float = 15.0
+    headless: bool = False
+    window_size: str = "1365,768"
 
     @property
     def headers(self) -> dict[str, str]:

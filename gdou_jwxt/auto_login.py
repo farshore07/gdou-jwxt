@@ -10,7 +10,7 @@ import requests
 from .captcha_solver import get_image_bytes, solve_slider
 from .config import JwxtConfig
 from .detector import classify_login_response
-from .models import AuthResult, AuthStatus
+from .models import AuthResult, AuthStatus, ChallengeType
 
 STEALTH_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -92,7 +92,16 @@ class AutoLogin:
                     if result.ok:
                         self._copy_cookies(page, session)
                         return result, session
-                    if result.status in {AuthStatus.INVALID_CREDENTIALS, AuthStatus.NEED_MANUAL_VERIFICATION}:
+                    if (
+                        result.status == AuthStatus.NEED_MANUAL_VERIFICATION
+                        and result.challenge_type == ChallengeType.SLIDER_CAPTCHA
+                    ):
+                        if self._try_solve_slider(page):
+                            self._click_submit(page)
+                            continue
+                        last_error = "滑块识别失败"
+                        break
+                    if result.status == AuthStatus.INVALID_CREDENTIALS:
                         return result, None
                     time.sleep(poll_interval)
                 self._copy_cookies(page, session)
@@ -116,10 +125,15 @@ class AutoLogin:
             raise RuntimeError("未安装 DrissionPage，无法执行自动登录") from exc
 
         options = ChromiumOptions()
-        for arg in CHROME_ARGS:
+        for arg in self._chrome_args():
             options.set_argument(arg)
-        options.set_argument("--remote-debugging-port", "0")
+        options.auto_port()
+        if self.config.headless:
+            options.headless(True)
         return ChromiumPage(options)
+
+    def _chrome_args(self) -> list[str]:
+        return [*CHROME_ARGS, f"--window-size={self.config.window_size}"]
 
     def _inject_stealth(self, page: object) -> None:
         try:
