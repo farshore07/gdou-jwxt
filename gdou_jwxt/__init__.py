@@ -3,6 +3,7 @@
 from .auth import Authenticator
 from .client import JwxtClient
 from .config import JwxtConfig
+from .cookie_store import CookieStore
 from .auto_login import AutoLogin
 from .models import AuthResult, AuthStatus, ChallengeType
 
@@ -12,6 +13,7 @@ __all__ = [
     "AuthResult",
     "AuthStatus",
     "ChallengeType",
+    "CookieStore",
     "JwxtClient",
     "JwxtConfig",
 ]

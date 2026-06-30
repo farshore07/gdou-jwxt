@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class JwxtConfig:
     timeout: float = 15.0
     headless: bool = False
     window_size: str = "1365,768"
+    cookie_file: Path = Path(".gdou_jwxt") / "cookies.json"
 
     @property
     def headers(self) -> dict[str, str]:
