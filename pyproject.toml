@@ -14,17 +14,17 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-
-[project.urls]
-Homepage = "https://github.com/farshore07/gdou-jwxt"
-Repository = "https://github.com/farshore07/gdou-jwxt.git"
-Issues = "https://github.com/farshore07/gdou-jwxt/issues"
 dependencies = [
     "requests>=2.31",
     "numpy>=1.26",
     "opencv-python-headless>=4.10",
     "DrissionPage>=4.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/farshore07/gdou-jwxt"
+Repository = "https://github.com/farshore07/gdou-jwxt.git"
+Issues = "https://github.com/farshore07/gdou-jwxt/issues"
 
 [tool.setuptools]
 include-package-data = false
