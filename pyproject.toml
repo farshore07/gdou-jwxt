@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gdou-jwxt"
-version = "0.1.0"
-description = "广东海洋大学教务系统全自动登录客户端"
+version = "0.2.1"
+description = "广东海洋大学教务系统客户端"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "GPL-3.0-only"}
@@ -14,6 +14,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Homepage = "https://github.com/farshore07/gdou-jwxt"
+Repository = "https://github.com/farshore07/gdou-jwxt.git"
+Issues = "https://github.com/farshore07/gdou-jwxt/issues"
 dependencies = [
     "requests>=2.31",
     "numpy>=1.26",
