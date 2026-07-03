@@ -12,7 +12,6 @@ dependencies = [
     "requests>=2.31",
     "numpy>=1.26",
     "opencv-python-headless>=4.10",
-    "ddddocr>=1.5",
     "DrissionPage>=4.1",
 ]
 
