@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
+
+import requests
 
 
 class AuthStatus(str, Enum):
@@ -17,8 +20,76 @@ class AuthStatus(str, Enum):
 
 
 class ChallengeType(str, Enum):
-    SLIDER_CAPTCHA = "slider_captcha"
-    SECONDARY_VERIFICATION = "secondary_verification"
+    IMAGE_CAPTCHA = "image_captcha"
+    MFA_REQUIRED = "mfa_required"
+
+
+class MfaMethod(str, Enum):
+    AUTO = "auto"
+    WECHAT = "wechat"
+    SMS = "sms"
+
+    @property
+    def reauth_type(self) -> str:
+        if self == MfaMethod.WECHAT:
+            return "4"
+        if self == MfaMethod.SMS:
+            return "3"
+        return ""
+
+    @property
+    def auth_code_type_name(self) -> str:
+        if self == MfaMethod.WECHAT:
+            return "reAuthWChatDynamicCodeType"
+        if self == MfaMethod.SMS:
+            return "reAuthDynamicCodeType"
+        return ""
+
+    @property
+    def label(self) -> str:
+        if self == MfaMethod.WECHAT:
+            return "企业微信验证码"
+        if self == MfaMethod.SMS:
+            return "手机短信验证码"
+        return "自动选择"
+
+    @classmethod
+    def from_reauth_type(cls, value: str) -> "MfaMethod":
+        normalized = (value or "").strip()
+        if normalized == "4":
+            return cls.WECHAT
+        if normalized == "3":
+            return cls.SMS
+        return cls.AUTO
+
+
+@dataclass
+class CaptchaChallenge:
+    image_bytes: bytes
+    content_type: str = "image/jpeg"
+    username: str = ""
+    message: str = ""
+
+
+@dataclass
+class MfaContext:
+    """单次二次验证上下文，与发起本次登录的独立 Session 绑定。"""
+
+    username: str
+    reauth_user_id: str
+    reauth_type: str
+    method: MfaMethod
+    service: str
+    is_multifactor: str = "true"
+    is_sleep_account: str = "0"
+    available_methods: tuple[MfaMethod, ...] = ()
+    code_sent: bool = False
+    countdown: int = 0
+    message: str = ""
+    created_at: float = field(default_factory=time.monotonic)
+    consumed: bool = False
+    _session: requests.Session | None = field(default=None, repr=False, compare=False)
+    _owner_id: int | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -55,7 +126,7 @@ T = TypeVar("T")
 
 
 @dataclass
-class PageResult:
+class PageResult(Generic[T]):
     items: list[T]
     total_count: int = 0
     total_page: int = 0

@@ -1,51 +1,103 @@
 # gdou-jwxt
 
-广东海洋大学教务系统全自动登录 Python 模块。
+广东海洋大学教务系统 Python 客户端（纯 HTTP 对接统一身份认证 `authserver.gdou.edu.cn` 与教务系统 `jw.gdou.edu.cn`）。
 
 ## 安装
 
-基础安装：
-
-```powershell
+```bash
 pip install -e .
 ```
 
 ## 导入
 
 ```python
-from gdou_jwxt import AutoLogin, Authenticator, JwxtClient, JwxtConfig
+from gdou_jwxt import (
+    Authenticator,
+    AuthStatus,
+    ChallengeType,
+    JwxtClient,
+    JwxtConfig,
+    MfaMethod,
+)
 ```
 
-## 无头登录
+## 登录与二次验证
+
+新设备首次登录统一身份认证时会触发企业微信或手机短信二次验证。本库支持以下两种交互方式：
+
+### 1. 回调式同步登录（适合脚本 / CLI）
 
 ```python
-from gdou_jwxt import Authenticator, JwxtConfig
+from gdou_jwxt import Authenticator, JwxtConfig, MfaMethod
 
-auth = Authenticator(config=JwxtConfig(headless=True))
+def ask_mfa_code(ctx) -> str:
+    print(ctx.message)
+    return input(f"请输入{ctx.method.label}（回车取消）: ").strip()
+
+auth = Authenticator(
+    config=JwxtConfig(mfa_method=MfaMethod.WECHAT, trust_device=True),
+    mfa_code_provider=ask_mfa_code,
+)
 result = auth.login("学号", "密码")
 ```
 
+### 2. 两步式状态机登录（适合 Web 后端 / Bot / GUI）
+
+不传 `mfa_code_provider` 时，触发二次验证会立即返回绑定了独立会话的 `MfaContext`：
+
+```python
+from gdou_jwxt import Authenticator, AuthStatus, ChallengeType, MfaMethod
+
+# 第一步：账密登录并触发发送验证码
+auth = Authenticator()
+res = auth.login("学号", "密码")
+
+if res.status == AuthStatus.NEED_MANUAL_VERIFICATION and res.challenge_type == ChallengeType.MFA_REQUIRED:
+    ctx = res.data
+    auth.send_mfa_code(ctx, method=MfaMethod.WECHAT)  # 或 MfaMethod.SMS
+
+    # 第二步：用户输入验证码后提交（trust_device=True 会标记可信设备）
+    res = auth.verify_mfa_code(ctx, code="123456", trust_device=True)
+```
+
+> 多用户服务端场景请为每个用户创建独立的 `Authenticator` 与隔离的 `CookieStore`（或传入 `JwxtConfig(cookie_file=None)` 自行持久化）。
+
 ## 会话保持
 
-登录成功后会把 Cookie 保存到程序运行目录：
+登录成功后会将 `jw.gdou.edu.cn` 与 `authserver.gdou.edu.cn` 双域 Cookie（含可信设备指纹）默认保存到当前项目目录：
 
 ```text
 .gdou_jwxt/cookies.json
 ```
 
-下次调用 `login()` 会先尝试复用 Cookie，失效后再重新自动登录。
+支持自定义保存目录、指定具体文件路径或关闭本地文件存储：
+
+```python
+# 自定义保存目录（自动保存为 <目录>/cookies.json）
+JwxtConfig(cookie_dir="./data/cookies")
+
+# 自定义目录 + 文件名（多账号隔离）
+JwxtConfig(cookie_dir="./data/cookies", cookie_file="student_a.json")
+
+# 直接指定完整文件路径
+JwxtConfig(cookie_file="/var/lib/jwxt/cookies.json")
+
+# 关闭本地文件存储
+JwxtConfig(cookie_file=None)
+```
+
+下次登录会优先复用已有 Cookie 或通过统一身份认证静默换票。
 
 ## 快捷接口
 
-已预留这些接口方法：
-
 ```python
-from gdou_jwxt import JwxtClient, JwxtConfig
+from gdou_jwxt import JwxtClient, JwxtConfig, MfaMethod
 
 client = JwxtClient(
     username="学号",
     password="密码",
-    config=JwxtConfig(headless=True),
+    config=JwxtConfig(mfa_method=MfaMethod.WECHAT, trust_device=True),
+    mfa_code_provider=lambda ctx: input(f"{ctx.message}\n请输入验证码: ").strip(),
 )
 
 auth, grades = client.query_grades(academic_year="2025-2026", term="12")
@@ -60,39 +112,4 @@ auth, rooms = client.query_empty_classrooms()
 
 成绩和考试日程返回 `PageResult`，数据在 `items`；课表返回 `TimetableResult`，课程在 `courses`，学生信息在 `student_info`。
 
-```python
-if auth.ok:
-    for item in exams.items:
-        print(item.course_name, item.exam_time, item.classroom)
-
-    for course in timetable.courses:
-        print(course.course_name, course.weekday_name, course.periods, course.classroom)
-```
-
-`query_grades()`、`query_timetable()`、`query_mobile_timetable()` 和 `query_exam_schedule()` 已有默认 URL。`academic_year` 传 `2025-2026` 这种学年格式，内部会自动转换成教务系统需要的 `xnm=2025`。
-
-成绩查询参数里 `academic_year` 对应 `xnm`，`term` 对应 `xqm`，`course_mark` 对应 `kcbj`。
-
-课表查询参数里 `academic_year` 对应 `xnm`，`term` 对应 `xqm`，`view_type` 对应 `kzlx`，`student_code` 对应 `xsdm`，`course_category` 对应 `kclbdm`，`course_type` 对应 `kclxdm`。
-
-移动端课表查询参数里 `academic_year` 对应 `xnm`，`term` 对应 `xqm`，`campus_id` 对应 `xqh_id`。
-
-考试日程查询参数里 `academic_year` 对应 `xnm`，`term` 对应 `xqm`，`exam_name_id` 对应 `ksmcdmb_id`，`course_code` 对应 `kch`，`course_name` 对应 `kc`，`exam_date` 对应 `ksrq`，`department_id` 对应 `kkbm_id`。
-
-其他接口需要在 `JwxtConfig` 里补 URL：
-
-```python
-config = JwxtConfig(
-    headless=True,
-    student_info_url="待补充",
-    training_plan_url="待补充",
-    course_selection_url="待补充",
-    empty_classroom_url="待补充",
-)
-```
-
-也可以直接请求任意已知接口：
-
-```python
-auth, data = client.query_endpoint("接口 URL", data={"xnm": "2025"})
-```
+`query_grades()`、`query_timetable()`、`query_mobile_timetable()` 和 `query_exam_schedule()` 已内置默认 URL，且为已确认的只读查询接口（会话过期时允许自动重登后重试一次）；通用 `query_endpoint()` 的 `POST` 请求默认禁止自动重试，确认幂等后可显式传入 `retry_on_expired=True`，含文件上传的请求始终禁止自动重试。
