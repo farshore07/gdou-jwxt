@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
-from .models import MfaMethod
+from .models import MfaMethod, NetworkMode
 
 DEFAULT_COOKIE_DIR = Path(".gdou_jwxt")
 DEFAULT_COOKIE_FILENAME = "cookies.json"
@@ -17,6 +17,9 @@ class JwxtConfig:
     jwxt_home_url: str = "https://jw.gdou.edu.cn/xtgl/index_initMenu.html"
     sso_service_url: str = "https://jw.gdou.edu.cn/sso/jziotlogin"
     authserver_base_url: str = "https://authserver.gdou.edu.cn/authserver"
+    wfw_base_url: str = "https://wfw.gdou.edu.cn"
+    netcheck_url: str = "https://netcheck.gdou.edu.cn/go.php?code=jw"
+    network_mode: NetworkMode = NetworkMode.CAMPUS
     grade_url: str = "https://jw.gdou.edu.cn/cjcx/cjcx_cxXsgrcj.html?doType=query&gnmkdm=N305005"
     timetable_url: str = "https://jw.gdou.edu.cn/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151"
     mobile_timetable_url: str = "https://jw.gdou.edu.cn/kbcx/xskbcxMobile_cxXsKb.html?gnmkdm=N2154"
@@ -38,6 +41,31 @@ class JwxtConfig:
     device_fingerprint: str = ""
 
     @property
+    def wfw_service_url(self) -> str:
+        return f"{self.wfw_base_url.rstrip('/')}/"
+
+    @property
+    def wfw_jwxt_init_url(self) -> str:
+        return f"{self.wfw_base_url.rstrip('/')}/{self.jwxt_base_url.rstrip('/')}"
+
+    @property
+    def wfw_jwxt_forward_url(self) -> str:
+        return f"{self.wfw_base_url.rstrip('/')}/xtgl/dl_loginForward.html?language="
+
+    def authserver_base_for(self, mode: NetworkMode) -> str:
+        # authserver.gdou.edu.cn 在校内与公网均可直连，且 wfw 代理不完整支持 POST /authserver/login
+        return self.authserver_base_url.rstrip("/")
+
+    def service_url_for(self, mode: NetworkMode) -> str:
+        if mode == NetworkMode.EXTERNAL:
+            return self.wfw_service_url
+        return self.sso_service_url
+
+    def authserver_login_url_for(self, mode: NetworkMode) -> str:
+        base = self.authserver_base_for(mode)
+        return f"{base}/login?service={quote(self.service_url_for(mode), safe='')}"
+
+    @property
     def resolved_cookie_file(self) -> Path | None:
         if self.cookie_file is None:
             return None
@@ -52,8 +80,7 @@ class JwxtConfig:
 
     @property
     def authserver_login_url(self) -> str:
-        base = self.authserver_base_url.rstrip("/")
-        return f"{base}/login?service={quote(self.sso_service_url, safe='')}"
+        return self.authserver_login_url_for(self.network_mode)
 
     @property
     def headers(self) -> dict[str, str]:

@@ -18,7 +18,24 @@ from gdou_jwxt import (
     JwxtClient,
     JwxtConfig,
     MfaMethod,
+    NetworkMode,
 )
+```
+
+## 网络环境选择（校内 / 校外）
+
+教务系统目前区分校内直连（`jw.gdou.edu.cn`）与校外反代网关（`wfw.gdou.edu.cn`），可在 `login()`、`JwxtClient` 或 `JwxtConfig` 中选择网络环境：
+
+- `NetworkMode.CAMPUS` / `"campus"`：校内直连（默认）
+- `NetworkMode.EXTERNAL` / `"external"`：校外网络（经由 `https://wfw.gdou.edu.cn` 代理访问，校内与公网均可用；公网通常需要输入图形验证码）
+- `NetworkMode.AUTO` / `"auto"`：通过 `https://netcheck.gdou.edu.cn/go.php?code=jw` 自动判定
+
+```python
+auth = Authenticator(mfa_code_provider=ask_mfa_code, captcha_solver=ask_captcha)
+# 校内网络登录
+res = auth.login("学号", "密码", network_mode=NetworkMode.CAMPUS)
+# 校外网络登录（也可传字符串 "external" 或 "auto"）
+res = auth.login("学号", "密码", network_mode=NetworkMode.EXTERNAL)
 ```
 
 ## 登录与二次验证
@@ -64,7 +81,7 @@ if res.status == AuthStatus.NEED_MANUAL_VERIFICATION and res.challenge_type == C
 
 ## 会话保持
 
-登录成功后会将 `jw.gdou.edu.cn` 与 `authserver.gdou.edu.cn` 双域 Cookie（含可信设备指纹）默认保存到当前项目目录：
+登录成功后会将 `jw.gdou.edu.cn`、`authserver.gdou.edu.cn` 及校外模式下 `wfw.gdou.edu.cn` 的 Cookie（含可信设备指纹）默认保存到当前项目目录：
 
 ```text
 .gdou_jwxt/cookies.json

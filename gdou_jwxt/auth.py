@@ -9,7 +9,7 @@ from requests.cookies import create_cookie
 from .config import JwxtConfig
 from .cookie_store import CookieStore
 from .detector import is_jwxt_authenticated_response
-from .models import AuthResult, AuthStatus, ChallengeType, MfaContext, MfaMethod
+from .models import AuthResult, AuthStatus, ChallengeType, MfaContext, MfaMethod, NetworkMode
 from .sso import CaptchaSolver, SsoClient, request_following_https
 
 MfaCodeProvider = Callable[[MfaContext], str]
@@ -42,6 +42,7 @@ class Authenticator:
         mfa_code_provider: MfaCodeProvider | None = None,
         captcha_solver: CaptchaSolver | None = None,
         session_factory: SessionFactory | None = None,
+        network_mode: NetworkMode | str | None = None,
     ) -> None:
         self.config = config or JwxtConfig()
         self._session_factory: SessionFactory = session_factory or requests.Session
@@ -51,6 +52,10 @@ class Authenticator:
         self.cookie_store = cookie_store or CookieStore(self.config.resolved_cookie_file)
         self.mfa_code_provider = mfa_code_provider
         self.captcha_solver = captcha_solver
+        self.network_mode = NetworkMode.parse(network_mode, default=self.config.network_mode)
+        self._active_mode: NetworkMode | None = (
+            None if self.network_mode == NetworkMode.AUTO else self.network_mode
+        )
 
     @property
     def _authserver_host(self) -> str:
@@ -60,13 +65,35 @@ class Authenticator:
     def _jwxt_host(self) -> str:
         return (urlparse(self.config.jwxt_base_url).hostname or "jw.gdou.edu.cn").lower()
 
-    def validate_session(self) -> AuthResult:
+    @property
+    def _wfw_host(self) -> str:
+        return (urlparse(self.config.wfw_base_url).hostname or "wfw.gdou.edu.cn").lower()
+
+    def resolve_network_mode(self, network_mode: NetworkMode | str | None = None) -> NetworkMode:
+        if network_mode is not None:
+            parsed = NetworkMode.parse(network_mode)
+            self.network_mode = parsed
+            if parsed == NetworkMode.AUTO:
+                self._active_mode = self.sso_client.resolve_network_mode(self.session, NetworkMode.AUTO)
+            else:
+                self._active_mode = parsed
+            return self._active_mode
+
+        if self._active_mode is None:
+            self._active_mode = self.sso_client.resolve_network_mode(self.session, self.network_mode)
+        return self._active_mode
+
+    def validate_session(self, *, network_mode: NetworkMode | str | None = None) -> AuthResult:
+        mode = self.resolve_network_mode(network_mode)
         try:
             response = request_following_https(
                 self.session,
                 "GET",
                 self.config.jwxt_home_url,
                 authserver_base_url=self.config.authserver_base_url,
+                jwxt_base_url=self.config.jwxt_base_url,
+                wfw_base_url=self.config.wfw_base_url,
+                mode=mode,
                 timeout=self.config.timeout,
             )
         except requests.RequestException as exc:
@@ -76,16 +103,29 @@ class Authenticator:
             response,
             jwxt_host=self._jwxt_host,
             authserver_host=self._authserver_host,
+            wfw_host=self._wfw_host,
         ):
-            return AuthResult(AuthStatus.SUCCESS, "已获得教务系统登录态", url=response.url)
+            self._sync_active_mode_from_url(response.url, mode)
+            return AuthResult(
+                AuthStatus.SUCCESS,
+                "已获得教务系统登录态",
+                url=response.url,
+                metadata={"network_mode": self.resolve_network_mode().value},
+            )
 
-        return AuthResult(AuthStatus.AUTHENTICATION_REQUIRED, "当前未获得有效登录态", url=response.url)
+        return AuthResult(
+            AuthStatus.AUTHENTICATION_REQUIRED,
+            "当前未获得有效登录态",
+            url=response.url,
+            metadata={"network_mode": mode.value},
+        )
 
     def login(
         self,
         username: str,
         password: str,
         *,
+        network_mode: NetworkMode | str | None = None,
         mfa_method: MfaMethod | None = None,
         trust_device: bool | None = None,
         mfa_code_provider: MfaCodeProvider | None = None,
@@ -94,20 +134,22 @@ class Authenticator:
         force_refresh: bool = False,
         max_mfa_attempts: int = 2,
     ) -> AuthResult:
+        mode = self.resolve_network_mode(network_mode)
+
         if not force_refresh and len(self.session.cookies) > 0:
-            current = self.validate_session()
+            current = self.validate_session(network_mode=mode)
             if current.ok:
                 return current
 
         if self.cookie_store.load(self.session) and not force_refresh:
-            stored = self.validate_session()
+            stored = self.validate_session(network_mode=mode)
             if stored.ok:
                 self.cookie_store.save(self.session)
                 return AuthResult(
                     AuthStatus.SUCCESS,
                     "已使用 Cookie 快速登录",
                     url=stored.url,
-                    metadata={"source": "cookie"},
+                    metadata={"source": "cookie", "network_mode": mode.value},
                 )
 
         # 使用独立事务 Session 执行本次认证，避免中途失败污染已有会话或发生多用户串号
@@ -116,11 +158,13 @@ class Authenticator:
             tx_session,
             username,
             password,
+            network_mode=mode,
             captcha_code=captcha_code,
             captcha_solver=captcha_solver or self.captcha_solver,
         )
 
         if result.ok:
+            self._sync_active_mode_from_url(result.url, mode)
             self._commit_session(tx_session)
             return result
 
@@ -168,6 +212,7 @@ class Authenticator:
 
         result = self.sso_client.verify_mfa_code(context, code, trust_device=trust_device)
         if result.ok and context._session is not None:
+            self._sync_active_mode_from_url(result.url, context.network_mode)
             self._commit_session(context._session)
         return result
 
@@ -215,6 +260,15 @@ class Authenticator:
     def _commit_session(self, source: requests.Session) -> None:
         _copy_cookies(self.session, source, clear_target=True)
         self.cookie_store.save(self.session)
+
+    def _sync_active_mode_from_url(self, final_url: str | None, fallback: NetworkMode) -> None:
+        host = (urlparse(final_url or "").hostname or "").lower()
+        if host == self._jwxt_host:
+            self._active_mode = NetworkMode.CAMPUS
+        elif host == self._wfw_host:
+            self._active_mode = NetworkMode.EXTERNAL
+        else:
+            self._active_mode = fallback
 
     def _check_context_owner(self, context: MfaContext) -> AuthResult | None:
         if context._owner_id is not None and context._owner_id != id(self):

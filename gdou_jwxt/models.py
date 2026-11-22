@@ -24,6 +24,32 @@ class ChallengeType(str, Enum):
     MFA_REQUIRED = "mfa_required"
 
 
+class NetworkMode(str, Enum):
+    CAMPUS = "campus"
+    EXTERNAL = "external"
+    AUTO = "auto"
+
+    @classmethod
+    def parse(cls, value: "NetworkMode | str | None", default: "NetworkMode | None" = None) -> "NetworkMode":
+        if isinstance(value, cls):
+            return value
+        if value is None:
+            return default or cls.CAMPUS
+        normalized = str(value).strip().lower()
+        mapping = {
+            "campus": cls.CAMPUS,
+            "direct": cls.CAMPUS,
+            "intranet": cls.CAMPUS,
+            "external": cls.EXTERNAL,
+            "wfw": cls.EXTERNAL,
+            "extranet": cls.EXTERNAL,
+            "auto": cls.AUTO,
+        }
+        if normalized in mapping:
+            return mapping[normalized]
+        raise ValueError(f"不支持的网络环境模式: {value!r}（可选: campus, external, auto）")
+
+
 class MfaMethod(str, Enum):
     AUTO = "auto"
     WECHAT = "wechat"
@@ -82,6 +108,7 @@ class MfaContext:
     service: str
     is_multifactor: str = "true"
     is_sleep_account: str = "0"
+    network_mode: NetworkMode = NetworkMode.CAMPUS
     available_methods: tuple[MfaMethod, ...] = ()
     code_sent: bool = False
     countdown: int = 0

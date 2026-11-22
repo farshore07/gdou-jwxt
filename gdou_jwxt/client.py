@@ -7,7 +7,7 @@ import requests
 
 from .auth import Authenticator, MfaCodeProvider
 from .config import JwxtConfig
-from .detector import is_auth_redirect, is_login_page_html, is_reauth_page_html
+from .detector import is_auth_redirect, is_login_page_html, is_reauth_page_html, rewrite_url_for_mode
 from .models import (
     AuthResult,
     AuthStatus,
@@ -15,6 +15,7 @@ from .models import (
     GradeRecord,
     MfaContext,
     MfaMethod,
+    NetworkMode,
     PageResult,
     TimetableResult,
 )
@@ -47,6 +48,7 @@ class JwxtClient:
         *,
         mfa_code_provider: MfaCodeProvider | None = None,
         captcha_solver: CaptchaSolver | None = None,
+        network_mode: NetworkMode | str | None = None,
     ) -> None:
         self.config = config or JwxtConfig()
         self.username = username
@@ -58,7 +60,10 @@ class JwxtClient:
             self.session,
             mfa_code_provider=mfa_code_provider,
             captcha_solver=captcha_solver,
+            network_mode=network_mode,
         )
+        if authenticator is not None and network_mode is not None:
+            self.authenticator.resolve_network_mode(network_mode)
 
     @property
     def _authserver_host(self) -> str:
@@ -68,9 +73,43 @@ class JwxtClient:
     def _jwxt_host(self) -> str:
         return (urlparse(self.config.jwxt_base_url).hostname or "jw.gdou.edu.cn").lower()
 
-    def ensure_authenticated(self, *, force_refresh: bool = False) -> AuthResult:
+    @property
+    def _wfw_host(self) -> str:
+        return (urlparse(self.config.wfw_base_url).hostname or "wfw.gdou.edu.cn").lower()
+
+    def login(
+        self,
+        *,
+        network_mode: NetworkMode | str | None = None,
+        mfa_method: MfaMethod | None = None,
+        trust_device: bool | None = None,
+        mfa_code_provider: MfaCodeProvider | None = None,
+        captcha_code: str | None = None,
+        captcha_solver: CaptchaSolver | None = None,
+        force_refresh: bool = False,
+    ) -> AuthResult:
+        if not self.username or not self.password:
+            return AuthResult(AuthStatus.AUTHENTICATION_REQUIRED, "缺少账号或密码")
+        return self.authenticator.login(
+            self.username,
+            self.password,
+            network_mode=network_mode,
+            mfa_method=mfa_method,
+            trust_device=trust_device,
+            mfa_code_provider=mfa_code_provider,
+            captcha_code=captcha_code,
+            captcha_solver=captcha_solver,
+            force_refresh=force_refresh,
+        )
+
+    def ensure_authenticated(
+        self,
+        *,
+        force_refresh: bool = False,
+        network_mode: NetworkMode | str | None = None,
+    ) -> AuthResult:
         if not force_refresh:
-            result = self.authenticator.validate_session()
+            result = self.authenticator.validate_session(network_mode=network_mode)
             if result.ok:
                 return result
         if not self.username or not self.password:
@@ -78,6 +117,7 @@ class JwxtClient:
         return self.authenticator.login(
             self.username,
             self.password,
+            network_mode=network_mode,
             force_refresh=force_refresh,
         )
 
@@ -108,15 +148,24 @@ class JwxtClient:
         **kwargs: Any,
     ) -> tuple[AuthResult, requests.Response | None]:
         allow_retry = self._resolve_retry_policy(method, retry_on_expired, kwargs)
+        mode = self.authenticator.resolve_network_mode()
 
-        if not self._has_jwxt_cookie():
+        if not self._has_jwxt_cookie(mode):
             self.authenticator.cookie_store.load(self.session)
-        if not self._has_jwxt_cookie():
-            auth = self.ensure_authenticated()
+        if not self._has_jwxt_cookie(mode):
+            auth = self.ensure_authenticated(network_mode=mode)
             if not auth.ok:
                 return auth, None
+            mode = self.authenticator.resolve_network_mode()
 
-        response, net_err = self._send_request(method, url, kwargs)
+        target_url = rewrite_url_for_mode(
+            url,
+            mode,
+            jwxt_base_url=self.config.jwxt_base_url,
+            authserver_base_url=self.config.authserver_base_url,
+            wfw_base_url=self.config.wfw_base_url,
+        )
+        response, net_err = self._send_request(method, target_url, kwargs)
         if net_err is not None:
             return net_err, None
         assert response is not None
@@ -134,11 +183,19 @@ class JwxtClient:
                 None,
             )
 
-        auth = self.ensure_authenticated(force_refresh=True)
+        auth = self.ensure_authenticated(force_refresh=True, network_mode=mode)
         if not auth.ok:
             return auth, None
+        mode = self.authenticator.resolve_network_mode()
+        retry_url = rewrite_url_for_mode(
+            url,
+            mode,
+            jwxt_base_url=self.config.jwxt_base_url,
+            authserver_base_url=self.config.authserver_base_url,
+            wfw_base_url=self.config.wfw_base_url,
+        )
 
-        retry_response, retry_net_err = self._send_request(method, url, kwargs)
+        retry_response, retry_net_err = self._send_request(method, retry_url, kwargs)
         if retry_net_err is not None:
             return retry_net_err, None
         assert retry_response is not None
@@ -338,11 +395,11 @@ class JwxtClient:
             return retry_on_expired
         return method.upper() == "GET"
 
-    def _has_jwxt_cookie(self) -> bool:
-        target = self._jwxt_host
+    def _has_jwxt_cookie(self, mode: NetworkMode) -> bool:
+        targets = (self._wfw_host, self._jwxt_host) if mode == NetworkMode.EXTERNAL else (self._jwxt_host,)
         for cookie in self.session.cookies:
             domain = (cookie.domain or "").lstrip(".").lower()
-            if not domain or domain == target or target.endswith(f".{domain}"):
+            if not domain or any(domain == t or t.endswith(f".{domain}") for t in targets):
                 return True
         return False
 
@@ -366,11 +423,14 @@ class JwxtClient:
     def _is_expired_response(self, response: requests.Response, *, expect_json: bool) -> bool:
         if is_auth_redirect(response, authserver_host=self._authserver_host):
             return True
-        if expect_json:
-            content_type = response.headers.get("content-type", "").lower()
-            if "json" not in content_type and (
-                is_login_page_html(response.text) or is_reauth_page_html(response.text)
-            ):
+        content_type = response.headers.get("content-type", "").lower()
+        if "json" not in content_type and (
+            is_login_page_html(response.text) or is_reauth_page_html(response.text)
+        ):
+            return True
+        if expect_json and "json" not in content_type and response.status_code == 200:
+            # 某些网关在未登录时可能返回非 JSON 提示页
+            if "authserver" in response.text or "统一身份认证" in response.text:
                 return True
         return False
 
